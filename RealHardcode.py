@@ -317,10 +317,10 @@ if __name__ == "__main__":
         robot_left = Robot("192.168.1.101", rotation_y_deg=-45, valve_controller=valves)
 
         robot_left.go_home()
-        robot_left.set_valves(d1=0, d2=0, d3=0, d4=4095)
-        time.sleep(1.0)
+        # yellow:three,d1
+        # black:two,d3
+        robot_left.set_valves(d1=5000, d2=0, d3=0, d4=0)
         robot_left.move_tool_xyz(x=-0.05, y=0.0, z=0.0, acc=0.1, vel=0.1)
-        time.sleep(1.0)
         robot_left.stop_valves()
     finally:
         if robot_left is not None:
