@@ -60,19 +60,15 @@ class ArduinoValveController:
         port: Optional[str] = None,
         baudrate: int = 115200,
         timeout: float = 1.0,
-        startup_delay: float = 2.0,
-        initialize: bool = True,
+        startup_delay: float = 3.0,
+        initialize: bool = False,
     ):
         self._require_pyserial()
         self._port = port or self.auto_detect_port()
         self._serial = self._open_serial(self._port, baudrate, timeout)
         self._last_command = self._build_command(0, 0, 0, 0)
 
-        # Many Arduino boards reset when the serial port is opened.
-        if startup_delay > 0:
-            time.sleep(startup_delay)
-        self._serial.reset_input_buffer()
-        self._serial.reset_output_buffer()
+        self._prepare_serial(startup_delay=startup_delay)
         if initialize:
             self.set_valves(0, 0, 0, 0)
 
@@ -148,9 +144,13 @@ class ArduinoValveController:
                 port=port,
                 baudrate=baudrate,
                 timeout=timeout,
+                write_timeout=timeout,
                 bytesize=8,
                 parity="N",
                 stopbits=1,
+                xonxoff=False,
+                rtscts=False,
+                dsrdtr=False,
             )
         except serial.SerialException as exc:
             raise RuntimeError(
@@ -158,6 +158,29 @@ class ArduinoValveController:
                 "On Ubuntu, make sure the device exists and this user has access "
                 "to /dev/ttyACM* or /dev/ttyUSB*."
             ) from exc
+
+    def _prepare_serial(self, startup_delay: float):
+        # Arduino IDE opening the serial monitor usually toggles DTR and then waits
+        # for the board to reboot. Mirror that behavior explicitly on Linux.
+        try:
+            self._serial.setRTS(False)
+        except Exception:
+            pass
+        try:
+            self._serial.setDTR(False)
+        except Exception:
+            pass
+        time.sleep(0.2)
+        self._serial.reset_input_buffer()
+        self._serial.reset_output_buffer()
+        try:
+            self._serial.setDTR(True)
+        except Exception:
+            pass
+        if startup_delay > 0:
+            time.sleep(startup_delay)
+        self._serial.reset_input_buffer()
+        self._serial.reset_output_buffer()
 
     @property
     def port(self) -> str:
@@ -168,10 +191,14 @@ class ArduinoValveController:
         return dict(self._last_command)
 
     def send_command(self, payload: dict[str, int]) -> dict[str, int]:
-        message = json.dumps(payload, separators=(",", ":")) + "\n"
+        message = json.dumps(payload, separators=(",", ":")) + "\r\n"
         print(f"[Arduino TX] {message.strip()}")
-        self._serial.write(message.encode("utf-8"))
-        self._serial.flush()
+        encoded = message.encode("utf-8")
+        # Some boards miss the first packet after USB CDC reconnect.
+        for _ in range(2):
+            self._serial.write(encoded)
+            self._serial.flush()
+            time.sleep(0.15)
         self._last_command = dict(payload)
         return dict(payload)
 
