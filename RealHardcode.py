@@ -324,7 +324,6 @@ if __name__ == "__main__":
         # yellow:three,d1
         # black:two,d3
         robot_right.set_valves(d1=0, d2=0, d3=5000, d4=0)
-        time.sleep(5.0)
         robot_right.move_tool_xyz(x=0.0, y=0.0, z=0.0, acc=0.1, vel=0.1)
         robot_right.stop_valves()
     finally:
