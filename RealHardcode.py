@@ -60,9 +60,7 @@ class ArduinoValveController:
         port: Optional[str] = None,
         baudrate: int = 115200,
         timeout: float = 1.0,
-        startup_delay: float = 3.0,
-        ready_retries: int = 8,
-        ready_retry_interval: float = 0.5,
+        startup_delay: float = 2.0,
         initialize: bool = True,
     ):
         self._require_pyserial()
@@ -75,7 +73,6 @@ class ArduinoValveController:
             time.sleep(startup_delay)
         self._serial.reset_input_buffer()
         self._serial.reset_output_buffer()
-        self.wait_until_ready(retries=ready_retries, retry_interval=ready_retry_interval)
         if initialize:
             self.set_valves(0, 0, 0, 0)
 
@@ -190,78 +187,27 @@ class ArduinoValveController:
             print(f"[Arduino RX] {text}")
         return text
 
-    @staticmethod
-    def _parse_json_lines(text: str) -> list[dict]:
-        messages = []
-        for line in text.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                parsed = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict):
-                messages.append(parsed)
-        return messages
-
-    def send_command_and_read(self, payload: dict[str, int], settle_time: float = 0.2) -> tuple[dict[str, int], str]:
+    def send_command_and_read(
+        self, payload: dict[str, int], settle_time: float = 0.2
+    ) -> tuple[dict[str, int], str]:
         sent = self.send_command(payload)
         response = self.read_available(settle_time=settle_time)
         return sent, response
 
-    def query_state(self, settle_time: float = 0.2, raise_on_empty: bool = True) -> Optional[dict]:
+    def query_state(self, settle_time: float = 0.2) -> str:
         _, response = self.send_command_and_read({"cmd": 1}, settle_time=settle_time)
-        messages = self._parse_json_lines(response)
-        if not messages:
-            if raise_on_empty:
-                raise RuntimeError(
-                    "Arduino did not respond to cmd=1. The board may not be running the expected .ino, "
-                    "or the serial port may be wrong."
-                )
-            return None
-        return messages[-1]
+        return response
 
-    def wait_until_ready(self, retries: int = 8, retry_interval: float = 0.5) -> dict:
-        last_state = None
-        for attempt in range(1, retries + 1):
-            last_state = self.query_state(
-                settle_time=retry_interval,
-                raise_on_empty=False,
-            )
-            if last_state is not None:
-                print(f"Arduino handshake succeeded on attempt {attempt}/{retries}")
-                return last_state
-        raise RuntimeError(
-            "Arduino did not respond after opening the serial port. "
-            "Likely causes: the expected .ino was not flashed, the wrong serial port was selected, "
-            "or another program is still holding the port."
-        )
-
-    def save_current_to_eeprom(self, settle_time: float = 0.2) -> dict:
-        _, response = self.send_command_and_read({"cmd": 3}, settle_time=settle_time)
-        messages = self._parse_json_lines(response)
-        if not messages:
-            raise RuntimeError("Arduino did not acknowledge cmd=3 EEPROM save request.")
-        last_message = messages[-1]
-        if last_message.get("type") == "error":
-            raise RuntimeError(f"Arduino reported an EEPROM save error: {last_message}")
-        return last_message
-
-    def set_valves(self, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0) -> dict[str, int]:
+    def set_valves(
+        self, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0
+    ) -> dict[str, int]:
         payload = self._build_command(d1, d2, d3, d4)
-        _, response = self.send_command_and_read(payload)
-        messages = self._parse_json_lines(response)
-        if not messages:
-            raise RuntimeError(
-                "Arduino did not acknowledge cmd=2. The valve command may not have been applied."
-            )
-        last_message = messages[-1]
-        if last_message.get("type") == "error":
-            raise RuntimeError(f"Arduino reported an error: {last_message}")
+        self.send_command_and_read(payload)
         return dict(payload)
 
-    def set_channel(self, channel_name: str, value: int, keep_others: bool = True) -> dict[str, int]:
+    def set_channel(
+        self, channel_name: str, value: int, keep_others: bool = True
+    ) -> dict[str, int]:
         channel_name = channel_name.lower()
         if channel_name not in self.CHANNEL_NAMES:
             raise ValueError(f"channel_name must be one of {self.CHANNEL_NAMES}.")
@@ -272,15 +218,7 @@ class ArduinoValveController:
             payload = self._build_command(0, 0, 0, 0)
 
         payload[channel_name] = self._normalize_value(channel_name, value)
-        _, response = self.send_command_and_read(payload)
-        messages = self._parse_json_lines(response)
-        if not messages:
-            raise RuntimeError(
-                f"Arduino did not acknowledge channel update for {channel_name}."
-            )
-        last_message = messages[-1]
-        if last_message.get("type") == "error":
-            raise RuntimeError(f"Arduino reported an error: {last_message}")
+        self.send_command_and_read(payload)
         return dict(payload)
 
     def stop_all(self) -> dict[str, int]:
@@ -321,7 +259,9 @@ class Robot:
         self._valve_controller = valve_controller
         return self
 
-    def set_valves(self, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0) -> dict[str, int]:
+    def set_valves(
+        self, d1: int = 0, d2: int = 0, d3: int = 0, d4: int = 0
+    ) -> dict[str, int]:
         if self._valve_controller is None:
             raise RuntimeError(
                 "No ArduinoValveController is attached. "
@@ -329,7 +269,9 @@ class Robot:
             )
         return self._valve_controller.set_valves(d1=d1, d2=d2, d3=d3, d4=d4)
 
-    def set_valve_channel(self, channel_name: str, value: int, keep_others: bool = True) -> dict[str, int]:
+    def set_valve_channel(
+        self, channel_name: str, value: int, keep_others: bool = True
+    ) -> dict[str, int]:
         if self._valve_controller is None:
             raise RuntimeError(
                 "No ArduinoValveController is attached. "
@@ -398,7 +340,9 @@ class Robot:
         pose.orient.rotate_zt(yaw)
         self.set_pose(pose, acc=acc, vel=vel)
 
-    def move_tool_xyzypr(self, x=0, y=0, z=0, pitch=0, roll=0, yaw=0, acc=0.1, vel=0.1):
+    def move_tool_xyzypr(
+        self, x=0, y=0, z=0, pitch=0, roll=0, yaw=0, acc=0.1, vel=0.1
+    ):
         pose = self.get_pose()
         pose.orient.rotate_zt(yaw)
         pose.orient.rotate_xt(pitch)
@@ -442,17 +386,15 @@ if __name__ == "__main__":
     try:
         # If auto detection does not pick the right device on Ubuntu,
         # pass the port explicitly, for example ArduinoValveController(port="/dev/ttyACM0").
-        valves = ArduinoValveController(port="/dev/ttyACM0", initialize=False)
+        valves = ArduinoValveController(port="/dev/ttyACM0")
         print(f"Arduino controller opened on {valves.port}")
-        print(f"Initial Arduino state: {valves.query_state()}")
         # Keep the same world/base alignment as class_robot_new_version.py.
         robot_right = Robot("192.168.1.102", rotation_y_deg=45, valve_controller=valves)
 
         robot_right.go_home()
         # yellow:three,d1
         # black:two,d3
-        robot_right.set_valves(d1=0, d2=0, d3=0, d4=0)
-        print(f"Arduino state after cmd=2: {valves.query_state()}")
+        robot_right.set_valves(d1=0, d2=0, d3=5000, d4=0)
         robot_right.move_tool_xyz(x=0.0, y=0.0, z=0.0, acc=0.1, vel=0.1)
         key = wait_for_keypress(
             "Arduino output is holding the current d1/d2/d3/d4 values. "
